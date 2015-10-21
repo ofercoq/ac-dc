@@ -66,6 +66,7 @@ public:
 	D tau;
 
 #endif
+	D mu;
 
 	L m;
 	L n;

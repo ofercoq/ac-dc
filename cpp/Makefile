@@ -10,11 +10,11 @@ EXPFOLDER = $(SRCFOLDER)experiments/
 FRONTENDS = $(SRCFOLDER)frontends/
 MATRIXCOMPLETITIONFOLDER = $(SRCFOLDER)experiments/matrixCompletition/
 
-include cluster.mk
-include gpu.mk
-include multicore.mk
-include cocoa.mk
-
+#include cluster.mk
+#include gpu.mk
+#include multicore.mk
+#include cocoa.mk
+include cdn_prox.mk
 
 
 all: clean	 
