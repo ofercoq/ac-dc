@@ -54,8 +54,8 @@ template<typename L, typename D>
   D norm = cblas_l2_norm(m, &w[0], 1);
 
   primal = 1 / (0.0 + n) * primal + lambda * 0.5 * norm * norm;
-  dual = 1 / (0.0 + n) * dual + lambda * 0.5 * norm * norm;
-  return primal + dual;
+  dual = -1 / (0.0 + n) * dual - lambda * 0.5 * norm * norm;
+  return primal - dual;
 
 }
 
@@ -79,12 +79,13 @@ template<typename L, typename D>
 			      D maxTime, std::vector<D>& Hessian, std::vector<D> & Li) {
   bool hessianPrecomputed = (Hessian.size() > 0);
   bool blockOfHessianComputed = (tau < 20) && !(tau == 1);
+  cout << "precomputing? " << hessianPrecomputed << "," << blockOfHessianComputed << endl;
   std::vector < D > x(n, 0);
-  for (int i = 0; i < x.size(); i++) {
+  for (unsigned int i = 0; i < x.size(); i++) {
     x[i] = 0;
   }
   std::vector < D > w(m, 0);
-  for (int i = 0; i < w.size(); i++) {
+  for (unsigned int i = 0; i < w.size(); i++) {
     w[i] = 0;
   }
 
@@ -136,16 +137,23 @@ template<typename L, typename D>
   if (!blockOfHessianComputed)
     dw_S.resize(m);
 
-  D tol = 1e-13;
+  D tol = 1e-5;
   double elapsedTime = 0;
   double start;
+  double elapsedTimeSampling = 0;    
+  double elapsedTimeComputingHessian = 0;
+  double elapsedTimeCD = 0;
+  double elapsedTimeLbfgsb = 0;  
+  double start2;
 
   long long it = 0;
+  long long skipped_lbfgsb = 0;
   int nbaff = 0;
   for (;;) {    
     start = gettime_();
     it = it + tau;
 
+    start2 = gettime_();
     // Calculate a tau-nice sampling
     if (tau < n) {
       for (int i = 0; i < tau; i++) {
@@ -168,8 +176,12 @@ template<typename L, typename D>
       for (int i = 0; i < tau; i++)
 	S[i] = i;
     }
+    elapsedTimeSampling += gettime_() - start2;
+    start2 = gettime_();
 
     // Build the according block of the Hessian matrix
+    for (int i=0; i<tau; i++) 
+      bS[i] = part.b[S[i]];
     if (hessianPrecomputed) {
 
       for (int row = 0; row < tau; row++) {
@@ -180,8 +192,9 @@ template<typename L, typename D>
 	  Qdata[row * tau + col] = tmp;
 	  Qdata[col * tau + row] = tmp;
 	}
+	Qdata[row * tau + row] += part.mu / n;
       }
-    } 
+    }
     else if (blockOfHessianComputed){
 
       std::vector<double>& vals = part.A_csr_values;
@@ -212,8 +225,8 @@ template<typename L, typename D>
 
 	  }
 
-	  Qdata[row * tau + col] = b[row] * tmp * scaling * b[col];
-	  Qdata[col * tau + row] = b[col] * tmp * scaling * b[row];
+	  Qdata[row * tau + col] = bS[row] * tmp * scaling / n * bS[col];
+	  Qdata[col * tau + row] = bS[col] * tmp * scaling / n * bS[row];
 
 	}
 	Qdata[row * tau + row] += part.mu / n;
@@ -223,16 +236,16 @@ template<typename L, typename D>
       // If tau == 1: the diagonal is enough
       // If tau > 20: We will estimate Qdata by BFGS
       for (int row = 0; row < tau; row++) {
-	Qdata[row] = Li[S[row]] * scaling + part.mu / n;
+	Qdata[row] = Li[S[row]] * scaling / n + part.mu / n;
       }
     }
+    elapsedTimeComputingHessian += gettime_() - start2;
 
-
-
+    start2 = gettime_();
     // We first try two runs of proximal coordinate descent.
     // This is much cheaper than L-BFGS-B and may be enough
     int do_lbfgsb = 0;
-    int nb_tries = ((tau>1) ? 2:1);
+    int nb_tries = 1*((tau>1) ? 2:1);
     for (int ii=0; ii < nb_tries*tau; ii++) {
       // Compute partial derivative
       int i = ii % tau;
@@ -241,11 +254,11 @@ template<typename L, typename D>
 	   j < part.A_csr_row_ptr[S[i] + 1]; j++) {
 	g0_S[i] += part.A_csr_values[j] * w[part.A_csr_col_idx[j]];
       }
-      g0_S[i] *= b[S[i]] / n;
+      g0_S[i] *= bS[i] / n;
       g0_S[i] += - 1. / (n + 0.0) + part.mu / n * x[S[i]];
 
       // Compute prox
-      x_S[i] = max(0., min(1., x[S[i]] - 1. / Qdata[i,i] * g0_S[i] ));
+      x_S[i] = max(0., min(1., x[S[i]] - 1. / (Li[S[i]] * scaling / n + part.mu / n) * g0_S[i] ));
 
       // Update and test whether one run of cd was enough
       for (int j = part.A_csr_row_ptr[S[i]];
@@ -257,8 +270,11 @@ template<typename L, typename D>
 	do_lbfgsb = 1;
       }
       x[S[i]] = x_S[i];
+      //cout << Qdata[0+0*tau] << " " << Qdata[1+0*tau] << " " << Qdata[0+1*tau] << " " << Qdata[1+1*tau] << endl;
     }
+    elapsedTimeCD += gettime_() - start2;
 
+    start2 = gettime_();
     if (do_lbfgsb) {
       // Compute the partial derivatives that are needed 
       // g0_S = -1/n + 1/n bS (A w)_S + mu/n x_S
@@ -270,7 +286,7 @@ template<typename L, typename D>
 	}
       }
       for (int i = 0; i < tau; i++) {
-	g0_S[i] *= b[S[i]] / n;
+	g0_S[i] *= bS[i] / n;
 	g0_S[i] += - 1. / (n + 0.0) + part.mu / n * x[S[i]];
       }
 
@@ -282,8 +298,8 @@ template<typename L, typename D>
       iprint = -1;
 
       //c     We specify the tolerances in the stopping criteria.
-      factr=1.0e4;  // 1.0e7;
-      pgtol=1.0e-8; // 1.0e-5;
+      factr=1.0e1;  // 1.0e7;
+      pgtol=tol / 1e3; // 1.0e-5;
 
       //c     We now provide nbd which defines the bounds on the variables:
       //c                    l   specifies the lower bounds,
@@ -311,6 +327,13 @@ template<typename L, typename D>
       setulb_(&tau, &rank, &x_S[0], &l_S[0], &u_S[0], &nbd[0], &f_S, &g_S[0],
 	      &factr, &pgtol, &wa[0], &iwa[0], task, &iprint,
 	      csave,lsave,isave,dsave);
+
+      /* cout << "wa initial" << endl; */
+      /* for (int j = 0; j<tau; j++) { */
+      /* 	for (int i = 0; i<2*rank; i++) */
+      /* 	  cout << wa[j*2*rank + i] << ","; */
+      /* 	cout << endl; */
+      /*}*/
 
       // (* while routine returns "FG" or "NEW_X" in task, keep calling it *)
       while (strncmp(task,"FG",2)==0 || strncmp(task,"NEW_X",5)==0) {
@@ -348,7 +371,7 @@ template<typename L, typename D>
 	  // end compute function value
 
 	  //c        Compute gradient g_S for the sample problem.
-	  for (int i=1; i<tau; i++)
+	  for (int i=0; i<tau; i++)
 	    g_S[i] = g0_S[i];
 	  if (blockOfHessianComputed) {
 	    for (int row=1; row<tau; row++)
@@ -359,7 +382,7 @@ template<typename L, typename D>
 	    for (int i = 0; i < tau; i++) {
 	      for (int j = part.A_csr_row_ptr[S[i]];
 		   j < part.A_csr_row_ptr[S[i] + 1]; j++) {
-		g_S[i] += b[S[i]] / n * part.A_csr_values[j] * dw_S[part.A_csr_col_idx[j]];
+		g_S[i] += bS[i] / n * part.A_csr_values[j] * dw_S[part.A_csr_col_idx[j]];
 	      }
 	    }
 	    for (int i = 0; i < tau; i++) {
@@ -367,7 +390,6 @@ template<typename L, typename D>
 	    }
 	  }
 	  // end compute gradient
-
 	}
 	else {
 	  // the minimization routine has returned with a new iterate,
@@ -379,6 +401,14 @@ template<typename L, typename D>
 		&factr, &pgtol, &wa[0], &iwa[0], task, &iprint,
 		csave,lsave,isave,dsave);
       } // end lbfgsb loop
+      /* cout << "wa final" << endl; */
+      /* for (int j = 0; j<tau; j++) { */
+      /* 	for (int i = 0; i<2*rank; i++) */
+      /* 	  cout << wa[j*2*rank + i] << ","; */
+      /* 	cout << endl; */
+      /*}*/
+      //2*rank*tau+4*tau+12*rank*rank+12*rank
+      //cout << wa[0] << "(final)" << endl;
 
       // Apply the update
       for (int i = 0; i < tau; i++) {
@@ -390,28 +420,34 @@ template<typename L, typename D>
       }
       for (int i = 0; i < tau; i++) {
 	x[S[i]] = x_S[i];
-      }
+      } 
+    }  // end do_lbfgsb
+    else
+      skipped_lbfgsb += tau;
 
-      // end do_lbfgsb
-    }
+    elapsedTimeLbfgsb+= gettime_() - start2;
 
     elapsedTime += (gettime_() - start);
-    // if ((it + tau) % n < tau) {
-    if (nbaff < elapsedTime || elapsedTime > maxTime || gap < tol) {
+    if ((it + tau) % n < tau) {
       gap = computeDualityGapSparse(m, n, part, b, x, w, lambda, primal,
 				    dual);
-      cout << it << "   Duality Gap: " << gap << "   " << primal
-	   << "   " << dual << "  " << elapsedTime << endl;
+    }
+    if (nbaff < elapsedTime || elapsedTime > maxTime || gap < tol) {
+      cout << it << "   Duality Gap: " << gap << " = " << primal
+	   << " - " << dual << " : " << elapsedTime << " s" << endl;
       logFile << setprecision(16) << tau << "," << m << ","
 	      << n << "," << lambda << "," << part.mu << "," << primal << "," << dual << ","
 	      << elapsedTime << endl;
       nbaff++;
     }
-
     if (elapsedTime > maxTime || gap < tol) {
       break;
     }
   }
+
+  cout << elapsedTime << " = " << elapsedTimeSampling << " + " << elapsedTimeComputingHessian <<
+    " + " << elapsedTimeCD << " + " << elapsedTimeLbfgsb << endl;
+  cout << "Percentage of LBFGS iterations skipped: " << 100 * skipped_lbfgsb / (D) it << " %" << endl;
 
   gsl_permutation_free(p);
   gsl_vector_free(T);

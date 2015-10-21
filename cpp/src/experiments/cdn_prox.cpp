@@ -99,19 +99,19 @@ int main(int argc, char * argv[]) {
       cblas_vector_scale(m, &A[m * i], 1 / norm);
     }
     b.resize(n);
-    for (int i = 0; i < b.size(); i++) {
+    for (unsigned int i = 0; i < b.size(); i++) {
       b[i] = -1 + 2 * round(rand() / (0.0 + RAND_MAX));
     }
   }
   std::vector<double> Li(n, 0);
   std::vector<double> LiSqInv(n, 0);
 
-  bool dense = (m * n == A.size());
+  bool dense = (m * n == (int) A.size());
 
   if (dense) {
     cout << "Input data is dense!!!" << endl;
     cout << "Not coded yet." << endl;
-    exit(1);
+    return 1;
   } else {
     cout << "Input data is sparse!!!  " << part.A_csr_row_ptr.size()
 	 << endl;
@@ -135,7 +135,7 @@ int main(int argc, char * argv[]) {
   std::vector<double> y(m);
 
   for (int i = 0; i < n; i++) {
-    x[i] = rand() / (0.0 + RAND_MAX);
+    x[i] = sqrt(Li[i]); //rand() / (0.0 + RAND_MAX);
   }
   double norm = cblas_l2_norm(n, &x[0], 1);
   cblas_vector_scale(n, &x[0], 1 / norm);
@@ -161,7 +161,7 @@ int main(int argc, char * argv[]) {
 	for (int j = part.A_csr_row_ptr[i];
 	     j < part.A_csr_row_ptr[i + 1]; j++) {
 	  y[part.A_csr_col_idx[j]] += part.A_csr_values[j]
-	    * LiSqInv[i] * part.b[i] * x[i];
+	     * part.b[i]* LiSqInv[i] * x[i];
 	}
 
       }
@@ -177,8 +177,8 @@ int main(int argc, char * argv[]) {
       } else {
 	for (int j = part.A_csr_row_ptr[i];
 	     j < part.A_csr_row_ptr[i + 1]; j++) {
-	  x[i] += part.A_csr_values[j] * LiSqInv[i]
-	    * part.b[i] * y[part.A_csr_col_idx[j]];
+	  x[i] += part.A_csr_values[j] * part.b[i] * LiSqInv[i]
+	    * y[part.A_csr_col_idx[j]];
 	}
 
       }
@@ -197,12 +197,12 @@ int main(int argc, char * argv[]) {
   y.resize(0);
   LiSqInv.resize(0);
 
-  double lambda = 1 / (n + 0.0);
+  double lambda = 1. / (n + 0.0);
 
   double maxTime = 1000;
 
   std::vector<double> Hessian;
-  if (n < 10000) {
+  if (n < 1) {
     Hessian.resize(n * n);
 
     if (dense) {
@@ -247,30 +247,22 @@ int main(int argc, char * argv[]) {
     }
   }
 
-  int MAXTAU = n;
+  int MAXTAU = n-1 ; //n-1;
 
-  for (int tau = 1; tau <= MAXTAU; tau = tau * 2) {
+  for (int tau = 1; tau <= MAXTAU; tau = tau * 4) {
     //		int tau = 1;
     //		omp_set_num_threads(tau);
 
-    double sigma = 1 + (tau - 1) * (maxEig - 1) / (n - 1.0);
+    //double sigma = 1 + (tau - 1) * (maxEig - 1) / (n - 1.0);
+
+    if (tau >= n/4)
+      tau = n;
 
     if (dense) {
-      randomNumberUtil::init_random_seeds(rs);
-
-      runPCDMExperiment(m, n, A, b, lambda, tau, logFile, Li, sigma,
-			maxTime);
-      randomNumberUtil::init_random_seeds(rs);
-
-      runCDNExperiment(m, n, A, b, lambda, tau, logFile, 1, maxTime,
-		       Hessian);
-      randomNumberUtil::init_random_seeds(rs);
-
-      runCDNExperiment(m, n, A, b, lambda, tau, logFile, 2, maxTime,
-		       Hessian);
+      cout << "Not coded yet" << endl;
     } else {
       randomNumberUtil::init_random_seeds(rs);
-      runCDNExperimentSparse(m, n, part, part.b, lambda, tau, logFile, 1,
+      runCDNExperimentSparse(m, n, part, part.b, lambda, tau, logFile, 
 			     maxTime, Hessian, Li);
 
     }
