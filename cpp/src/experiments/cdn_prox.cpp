@@ -55,6 +55,7 @@ int main(int argc, char * argv[]) {
   ProblemData<int, double> part;
   std::vector<double> A;
   std::vector<double> b;
+  part.mu = 0;
 
   if (RDN == 0) {
     loadDistributedSparseSVMRowData(file, -1, -1, part, false);
@@ -186,7 +187,7 @@ int main(int argc, char * argv[]) {
     }
 
     maxEig = cblas_l2_norm(n, &x[0], 1);
-    cout << maxEig << endl;
+    //cout << maxEig << endl;
     cblas_vector_scale(n, &x[0], 1 / maxEig);
 
   }
@@ -197,12 +198,12 @@ int main(int argc, char * argv[]) {
   y.resize(0);
   LiSqInv.resize(0);
 
-  double lambda = 1. / (n + 0.0);
+  double lambda = 0.1 / (n + 0.0);
 
   double maxTime = 1000;
 
   std::vector<double> Hessian;
-  if (n < 1) {
+  if (n < 2000) {
     Hessian.resize(n * n);
 
     if (dense) {
@@ -247,15 +248,15 @@ int main(int argc, char * argv[]) {
     }
   }
 
-  int MAXTAU = n-1 ; //n-1;
+  int MAXTAU = 512;
 
-  for (int tau = 1; tau <= MAXTAU; tau = tau * 4) {
+  for (int tau = 1; tau <= MAXTAU; tau = tau + 1) {
     //		int tau = 1;
     //		omp_set_num_threads(tau);
 
     //double sigma = 1 + (tau - 1) * (maxEig - 1) / (n - 1.0);
 
-    if (tau >= n/4)
+    if (tau >= 512)
       tau = n;
 
     if (dense) {

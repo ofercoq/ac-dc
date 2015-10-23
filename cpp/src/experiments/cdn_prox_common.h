@@ -78,7 +78,8 @@ template<typename L, typename D>
 			      ofstream& logFile,
 			      D maxTime, std::vector<D>& Hessian, std::vector<D> & Li) {
   bool hessianPrecomputed = (Hessian.size() > 0);
-  bool blockOfHessianComputed = (tau < 20) && !(tau == 1);
+  bool blockOfHessianComputed = hessianPrecomputed ||
+    ((tau < 1000) && !(tau == 1) && (tau < m));
   cout << "precomputing? " << hessianPrecomputed << "," << blockOfHessianComputed << endl;
   std::vector < D > x(n, 0);
   for (unsigned int i = 0; i < x.size(); i++) {
@@ -132,12 +133,16 @@ template<typename L, typename D>
   std::vector<double> u_S(tau);
   std::vector<double> g0_S(tau);
   std::vector<double> g_S(tau);
-  std::vector<double> wa(2*rank*tau+4*tau+12*rank*rank+12*rank);
+  // the new version of lbfgs needs a different amount of space 
+  std::vector<double> wa(2*rank*tau+5*tau+11*rank*rank+8*rank);
   std::vector<double> dw_S;
   if (!blockOfHessianComputed)
     dw_S.resize(m);
 
-  D tol = 1e-5;
+  if (2*rank*tau+5*tau+11*rank*rank+8*rank > 1 << 30)
+    cout << "large integers: " << 2*rank*tau+5*tau+11*rank*rank+8*rank << " " << (1 << 30) << endl;
+
+  D tol = 1e-7;
   double elapsedTime = 0;
   double start;
   double elapsedTimeSampling = 0;    
@@ -148,6 +153,7 @@ template<typename L, typename D>
 
   long long it = 0;
   long long skipped_lbfgsb = 0;
+  double skipped_cd = 0;
   int nbaff = 0;
   for (;;) {    
     start = gettime_();
@@ -187,7 +193,7 @@ template<typename L, typename D>
       for (int row = 0; row < tau; row++) {
 	for (int col = row; col < tau; col++) {
 
-	  D tmp = Hessian[S[row] * n + S[col]] * scaling;
+	  D tmp = Hessian[S[row] * n + S[col]] * scaling / n;
 
 	  Qdata[row * tau + col] = tmp;
 	  Qdata[col * tau + row] = tmp;
@@ -222,7 +228,6 @@ template<typename L, typename D>
 	    else {
 	      id2++;
 	    }
-
 	  }
 
 	  Qdata[row * tau + col] = bS[row] * tmp * scaling / n * bS[col];
@@ -233,19 +238,19 @@ template<typename L, typename D>
       }
     }
     else {
+      // We use the matrix directly when needed
       // If tau == 1: the diagonal is enough
-      // If tau > 20: We will estimate Qdata by BFGS
-      for (int row = 0; row < tau; row++) {
-	Qdata[row] = Li[S[row]] * scaling / n + part.mu / n;
-      }
     }
+
+    //cout << Qdata[3*tau+3] << " " << Li[S[3]] * scaling / n + part.mu / n << endl;
+
     elapsedTimeComputingHessian += gettime_() - start2;
 
     start2 = gettime_();
     // We first try two runs of proximal coordinate descent.
     // This is much cheaper than L-BFGS-B and may be enough
     int do_lbfgsb = 0;
-    int nb_tries = 1*((tau>1) ? 2:1);
+    int nb_tries = 1;
     for (int ii=0; ii < nb_tries*tau; ii++) {
       // Compute partial derivative
       int i = ii % tau;
@@ -266,6 +271,8 @@ template<typename L, typename D>
 	w[part.A_csr_col_idx[j]] += scaling * part.A_csr_values[j]
 	  * bS[i] * (x_S[i] - x[S[i]]);
       }
+      if (ii < tau && abs(x[S[i]] - x_S[i]) > tol && tau > 1)
+	nb_tries = 2;
       if (ii >= tau && abs(x[S[i]] - x_S[i]) > tol) {
 	do_lbfgsb = 1;
       }
@@ -328,13 +335,6 @@ template<typename L, typename D>
 	      &factr, &pgtol, &wa[0], &iwa[0], task, &iprint,
 	      csave,lsave,isave,dsave);
 
-      /* cout << "wa initial" << endl; */
-      /* for (int j = 0; j<tau; j++) { */
-      /* 	for (int i = 0; i<2*rank; i++) */
-      /* 	  cout << wa[j*2*rank + i] << ","; */
-      /* 	cout << endl; */
-      /*}*/
-
       // (* while routine returns "FG" or "NEW_X" in task, keep calling it *)
       while (strncmp(task,"FG",2)==0 || strncmp(task,"NEW_X",5)==0) {
 
@@ -346,11 +346,11 @@ template<typename L, typename D>
 	  // f_S(x) - f_S(x0) = -dual(x) + dual(x0) 
 	  //   = < g0, x - x0 > + 0.5 < x - x0, Q (x - x0) >
 	  f_S = 0;
-	  for (int i=1; i<tau; i++)
+	  for (int i=0; i<tau; i++)
 	    f_S += g0_S[i] * (x_S[i] - x[S[i]]);
 	  if (blockOfHessianComputed)
-	    for (int row=1; row<tau; row++)
-	      for (int col=1; col<tau; col++)
+	    for (int row=0; row<tau; row++)
+	      for (int col=0; col<tau; col++)
 		f_S += 0.5 * (x_S[row] - x[S[row]]) * Qdata[row * tau + col]
 		            * (x_S[col] - x[S[col]]);
 	  else {
@@ -374,8 +374,8 @@ template<typename L, typename D>
 	  for (int i=0; i<tau; i++)
 	    g_S[i] = g0_S[i];
 	  if (blockOfHessianComputed) {
-	    for (int row=1; row<tau; row++)
-	      for (int col=1; col<tau; col++)
+	    for (int row=0; row<tau; row++)
+	      for (int col=0; col<tau; col++)
 		g_S[row] += Qdata[row * tau + col] * (x_S[col] - x[S[col]]);
 	  }
 	  else {
@@ -400,15 +400,8 @@ template<typename L, typename D>
 	setulb_(&tau, &rank, &x_S[0], &l_S[0], &u_S[0], &nbd[0], &f_S, &g_S[0],
 		&factr, &pgtol, &wa[0], &iwa[0], task, &iprint,
 		csave,lsave,isave,dsave);
+
       } // end lbfgsb loop
-      /* cout << "wa final" << endl; */
-      /* for (int j = 0; j<tau; j++) { */
-      /* 	for (int i = 0; i<2*rank; i++) */
-      /* 	  cout << wa[j*2*rank + i] << ","; */
-      /* 	cout << endl; */
-      /*}*/
-      //2*rank*tau+4*tau+12*rank*rank+12*rank
-      //cout << wa[0] << "(final)" << endl;
 
       // Apply the update
       for (int i = 0; i < tau; i++) {
@@ -420,12 +413,16 @@ template<typename L, typename D>
       }
       for (int i = 0; i < tau; i++) {
 	x[S[i]] = x_S[i];
-      } 
+      }
+
     }  // end do_lbfgsb
     else
       skipped_lbfgsb += tau;
 
-    elapsedTimeLbfgsb+= gettime_() - start2;
+    if (nb_tries == 1)
+      skipped_cd += 0.5 * tau;
+
+    elapsedTimeLbfgsb += gettime_() - start2;
 
     elapsedTime += (gettime_() - start);
     if ((it + tau) % n < tau) {
@@ -447,7 +444,10 @@ template<typename L, typename D>
 
   cout << elapsedTime << " = " << elapsedTimeSampling << " + " << elapsedTimeComputingHessian <<
     " + " << elapsedTimeCD << " + " << elapsedTimeLbfgsb << endl;
+  cout << "Percentage of CD iterations skipped: " << 100 * skipped_cd / (D) it << " %" << endl;
   cout << "Percentage of LBFGS iterations skipped: " << 100 * skipped_lbfgsb / (D) it << " %" << endl;
+
+  cout << x[0] << " " << x[1] << " " << x[2] << endl;
 
   gsl_permutation_free(p);
   gsl_vector_free(T);
@@ -528,6 +528,7 @@ c
 c     wa is a DOUBLE PRECISION  array of length 
 c       (2mmax + 4)nmax + 12mmax^2 + 12mmax used as workspace.
 c       This array must not be altered by the user.
+c   !!! The new version of LBFGS requires a different amount of memory !!!
 c
 c     iwa is an INTEGER  array of length 3nmax used as
 c       workspace. This array must not be altered by the user.
